@@ -160,3 +160,4 @@ Whoosh==2.7.4
 xlrd==2.0.1
 zopfli==0.2.3.post1
 zxcvbn==4.4.28
+google-cloud-vision==3.5.0
