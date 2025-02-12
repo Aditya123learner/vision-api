@@ -40,6 +40,7 @@ def extract_item_level_data(docname, item_idx):
             return {"success": False, "error": "No text detected."}
             
         extracted_text = texts[0].description
+        frappe.log_error(f"Extracted Text:\n{extracted_text}", "OCR Debug Log")
         
         # Extract Lot No.
         lot_pattern = re.search(r"Lot\s*No\.\s*:\s*(\d{6,7})", extracted_text, re.IGNORECASE)
