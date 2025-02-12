@@ -165,7 +165,8 @@ def extract_document_data(docname, file_url):
         return {
             "success": True,
             "message": f"Successfully created {len(reel_weight_pairs)} rows with data",
-            "rows_count": len(reel_weight_pairs)
+            "rows_count": len(reel_weight_pairs),
+            "lot_no": lot_no
         }
         
     except Exception as e:
