@@ -43,12 +43,12 @@ def extract_item_level_data(docname, item_idx):
         frappe.log_error(f"Extracted Text:\n{extracted_text}", "OCR Debug Log")
         
         # Extract Lot No.
-        lot_pattern = re.search(r"Lot\s*No\.\s*:\s*(\d{6,7})", extracted_text, re.IGNORECASE)
+        lot_pattern = re.search(r"Lot\s*No\.\s*:\s*(\d{6})", extracted_text, re.IGNORECASE)
         lot_no = lot_pattern.group(1) if lot_pattern else None
         
         # Fallback: Find first 6-7 digit number in the text
         if not lot_no:
-            lot_fallback = re.findall(r"\b\d{6,7}\b", extracted_text)
+            lot_fallback = re.findall(r"\b\d{6}\b", extracted_text)
             lot_no = lot_fallback[0] if lot_fallback else None
             
         # Extract Reel No.
@@ -114,6 +114,7 @@ def extract_document_data(docname, file_url):
             return {"success": False, "error": "No text detected."}
             
         extracted_text = texts[0].description
+        frappe.log_error(f"Extracted Text:\n{extracted_text}", "OCR Debug Log")
         
         # Extract lot number (common for all rows)
         lot_pattern = re.search(r"Lot\s*No\.\s*:\s*(\d{6})", extracted_text, re.IGNORECASE)
