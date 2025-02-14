@@ -1,3 +1,5 @@
+# api.py
+
 import json
 import re
 from typing import Dict, List, Tuple
@@ -68,7 +70,7 @@ class DocumentProcessor:
             
             # Process the extracted text
             result = self.process_extracted_text(extracted_text)
-            result['extracted_text'] = extracted_text  # Include full extracted text in response
+            result['extracted_text'] = extracted_text
             
             return result
             
@@ -129,8 +131,11 @@ class DocumentProcessor:
             return {"success": False, "error": str(e)}
 
 @frappe.whitelist()
-def process_multiple_documents(docname: str, file_urls: List[str]) -> Dict:
+def process_multiple_documents(docname, file_urls):
     """Process multiple documents and combine their data."""
+    if isinstance(file_urls, str):
+        file_urls = [file_urls]  # Convert single URL to list
+        
     try:
         processor = DocumentProcessor()
         all_products_data = []
@@ -203,63 +208,44 @@ def process_multiple_documents(docname: str, file_urls: List[str]) -> Dict:
 @frappe.whitelist()
 def extract_document_data(docname: str, file_url: str) -> Dict:
     """Process a single document."""
+    return process_multiple_documents(docname, [file_url])
+
+@frappe.whitelist()
+def extract_item_level_data(docname: str, item_idx: int) -> Dict:
+    """Extract data for a single item row."""
     try:
+        doc = frappe.get_doc("Purchase Receipt", docname)
+        if not doc.items or len(doc.items) < item_idx:
+            return {"success": False, "error": "Invalid item index"}
+            
+        item = doc.items[item_idx - 1]
+        if not item.custom_attach_image:
+            return {"success": False, "error": "No image attached to this item"}
+            
         processor = DocumentProcessor()
-        file_path = get_file_path(file_url)
+        file_path = get_file_path(item.custom_attach_image)
         result = processor.process_image(file_path)
         
         if not result["success"]:
             return result
             
-        products_data = result["products_data"]
-        extracted_text = result["extracted_text"]
-        
-        # Update the document
-        doc = frappe.get_doc("Purchase Receipt", docname)
-        
-        # Store template data
-        template_data = None
-        if doc.items:
-            template_data = {
-                "item_code": doc.items[0].item_code,
-                "item_name": doc.items[0].item_name,
-                "description": doc.items[0].description,
-                "uom": doc.items[0].uom,
-                "warehouse": doc.items[0].warehouse
-            }
-        
-        # Clear existing items
-        doc.items = []
-        
-        # Add all extracted rows
-        total_rows = 0
-        for product in products_data:
-            for reel_no, weight in product['data']:
-                row_data = {
-                    "custom_lot_no": product['lot_no'],
-                    "custom_reel_no": reel_no,
-                    "qty": float(weight),
-                    "received_qty": float(weight),
-                    "accepted_qty": float(weight),
-                    "rejected_qty": 0
-                }
-                
-                if template_data:
-                    row_data.update(template_data)
-                    
-                doc.append("items", row_data)
-                total_rows += 1
-        
-        doc.save(ignore_version=True)
+        if not result["products_data"]:
+            return {"success": False, "error": "No data could be extracted from the image"}
+            
+        # Take the first reel data from the first product
+        product = result["products_data"][0]
+        if not product["data"]:
+            return {"success": False, "error": "No reel data found in the image"}
+            
+        reel_no, weight = product["data"][0]
         
         return {
             "success": True,
-            "message": f"Successfully created {total_rows} rows with data",
-            "rows_count": total_rows,
-            "extracted_text": extracted_text,
-            "products_data": products_data
+            "lot_no": product["lot_no"],
+            "reel_no": reel_no,
+            "qty": float(weight)
         }
         
     except Exception as e:
-        frappe.log_error(f"Document processing failed: {str(e)}", "OCR Error")
+        frappe.log_error(f"Item level data extraction failed: {str(e)}", "OCR Error")
         return {"success": False, "error": str(e)}
