@@ -23,7 +23,6 @@ def extract_item_level_data(docname, item_idx):
         
         # Load Google Vision Credentials
         google_credentials = json.loads(frappe.conf.get("google_application_credentials"))
-        # Initialize Google Vision API Client
         client = vision.ImageAnnotatorClient.from_service_account_info(google_credentials)
         
         # Read the image
@@ -38,23 +37,19 @@ def extract_item_level_data(docname, item_idx):
         if not texts:
             return {"success": False, "error": "No text detected."}
             
-        # Log the full response from Google Vision API
-        frappe.log(f"Google Vision API Response: {response}")
-        
         extracted_text = texts[0].description
-        frappe.log(f"Extracted Text: {extracted_text}")
         
         # Extract Lot No.
-        lot_pattern = re.search(r"Lot\s*No\.?\s*:\s*(\d{6,7})", extracted_text, re.IGNORECASE)
+        lot_pattern = re.search(r"Lot\s*No\.?\s*:?\s*(\d{6,7})", extracted_text, re.IGNORECASE)
         lot_no = lot_pattern.group(1) if lot_pattern else None
         
         # Fallback: Find first 6-7 digit number in the text
         if not lot_no:
-            lot_fallback = re.findall(r"\b\d{6,7}\b", extracted_text)
-            lot_no = lot_fallback[0] if lot_fallback else None
+            fallback_lot = re.findall(r"\b\d{6,7}\b", extracted_text)
+            lot_no = fallback_lot[0] if fallback_lot else None
             
         # Extract Reel No.
-        reel_pattern = re.search(r"REEL\s*No\.?\s*:\s*(\d{3}\s*\d{5})", extracted_text, re.IGNORECASE)
+        reel_pattern = re.search(r"REEL\s*No\.?\s*:?\s*(\d{8,9})", extracted_text, re.IGNORECASE)
         reel_no = reel_pattern.group(1).replace(" ", "") if reel_pattern else None
         
         # Fallback: Find first 8-9 digit number
@@ -115,36 +110,33 @@ def extract_document_data(docname, file_url):
         if not texts:
             return {"success": False, "error": "No text detected."}
             
-        # Log the full response from Google Vision API
-        frappe.log(f"Google Vision API Response: {response}")
-        
         extracted_text = texts[0].description
-        frappe.log(f"Extracted Text: {extracted_text}")
         
-        # Extract all Lot No. and their positions
-        lot_entries = re.finditer(r"Lot\s*No\.?\s*:\s*(\d{6,7})", extracted_text, re.IGNORECASE)
-        lot_positions = [(m.start(), m.group(1)) for m in lot_entries]
-
-        # Extract all BSR numbers and weights with their positions
-        reel_weight_entries = re.finditer(r'(\d{8})\s+(\d{2,3}(?:\.\d{0,2})?)', extracted_text)
-        reel_weight_positions = [(m.start(), m.group(1), m.group(2)) for m in reel_weight_entries]
-
-        # Sort positions
-        lot_positions.sort()
-        reel_weight_positions.sort()
-
-        # Assign Lot No. to each BSR No. and weight
+        # Split text into lines for structured parsing
+        lines = extracted_text.split('\n')
         current_lot_no = None
-        rows = []
-        for rw_start, reel_no, weight in reel_weight_positions:
-            # Find the latest Lot No. before the current BSR No. and weight
-            for lot_start, lot_no in lot_positions:
-                if lot_start < rw_start:
-                    current_lot_no = lot_no
-                else:
-                    break
-            rows.append((current_lot_no, reel_no, weight))
+        lot_numbers = []
+        reel_weight_pairs = []
 
+        # Iterate through lines to find Lot No. and BSR/Weight pairs
+        for line in lines:
+            # Check if line contains "Lot No." (case-insensitive)
+            if re.search(r"Lot\s*No\.?", line, re.IGNORECASE):
+                # Extract the first 6-7 digit number in the next lines
+                for next_line in lines[lines.index(line)+1:]:
+                    lot_match = re.search(r"\b\d{6,7}\b", next_line)
+                    if lot_match:
+                        current_lot_no = lot_match.group()
+                        lot_numbers.append(current_lot_no)
+                        break
+            
+            # Extract BSR No. and Weight (assuming format: BSR followed by weight)
+            bsr_weight_match = re.search(r"(\d{8})\s+(\d{2,3}(?:\.\d{0,2})?)", line)
+            if bsr_weight_match:
+                reel_no = bsr_weight_match.group(1)
+                weight = bsr_weight_match.group(2)
+                reel_weight_pairs.append((current_lot_no, reel_no, weight))
+        
         # Get the document
         doc = frappe.get_doc("Purchase Receipt", docname)
         
@@ -163,7 +155,7 @@ def extract_document_data(docname, file_url):
         doc.items = []
         
         # Add all extracted rows
-        for lot_no, reel_no, weight in rows:
+        for lot_no, reel_no, weight in reel_weight_pairs:
             row_data = {
                 "custom_lot_no": lot_no,
                 "custom_reel_no": reel_no,
@@ -183,10 +175,10 @@ def extract_document_data(docname, file_url):
         
         return {
             "success": True,
-            "message": f"Successfully created {len(rows)} rows with data",
-            "rows_count": len(rows),
-            "lot_no": current_lot_no,  # Return the extracted Lot No. for debugging
-            "raw_text": extracted_text  # Return the full extracted text for debugging
+            "message": f"Successfully created {len(reel_weight_pairs)} rows with data",
+            "rows_count": len(reel_weight_pairs),
+            "lot_no": current_lot_no,
+            "raw_text": extracted_text
         }
         
     except Exception as e:
