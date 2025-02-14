@@ -41,7 +41,7 @@ def extract_item_level_data(docname, item_idx):
         extracted_text = texts[0].description
         
         # Extract Lot No.
-        lot_pattern = re.findall(r"\b\d{6}\b", extracted_text, re.IGNORECASE)
+        lot_pattern = re.search(r"Lot\s*No\.?\s*:\s*(\d{6,7})", extracted_text, re.IGNORECASE)
         lot_no = lot_pattern.group(1) if lot_pattern else None
         
         # Fallback: Find first 6-7 digit number in the text
@@ -176,7 +176,9 @@ def extract_document_data(docname, file_url):
         return {
             "success": True,
             "message": f"Successfully created {len(rows)} rows with data",
-            "rows_count": len(rows)
+            "rows_count": len(rows),
+            "lot_no":lot_no,
+            "texts": texts
         }
         
     except Exception as e:
