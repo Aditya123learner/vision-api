@@ -38,7 +38,11 @@ def extract_item_level_data(docname, item_idx):
         if not texts:
             return {"success": False, "error": "No text detected."}
             
+        # Log the full response from Google Vision API
+        frappe.log(f"Google Vision API Response: {response}")
+        
         extracted_text = texts[0].description
+        frappe.log(f"Extracted Text: {extracted_text}")
         
         # Extract Lot No.
         lot_pattern = re.search(r"Lot\s*No\.?\s*:\s*(\d{6,7})", extracted_text, re.IGNORECASE)
@@ -50,7 +54,7 @@ def extract_item_level_data(docname, item_idx):
             lot_no = lot_fallback[0] if lot_fallback else None
             
         # Extract Reel No.
-        reel_pattern = re.search(r"REEL\s*No\.\s*:\s*(\d{3}\s*\d{5})", extracted_text, re.IGNORECASE)
+        reel_pattern = re.search(r"REEL\s*No\.?\s*:\s*(\d{3}\s*\d{5})", extracted_text, re.IGNORECASE)
         reel_no = reel_pattern.group(1).replace(" ", "") if reel_pattern else None
         
         # Fallback: Find first 8-9 digit number
@@ -111,10 +115,14 @@ def extract_document_data(docname, file_url):
         if not texts:
             return {"success": False, "error": "No text detected."}
             
+        # Log the full response from Google Vision API
+        frappe.log(f"Google Vision API Response: {response}")
+        
         extracted_text = texts[0].description
+        frappe.log(f"Extracted Text: {extracted_text}")
         
         # Extract all Lot No. and their positions
-        lot_entries = re.finditer(r"Lot\s*No\.\s*:\s*(\d{6})", extracted_text, re.IGNORECASE)
+        lot_entries = re.finditer(r"Lot\s*No\.?\s*:\s*(\d{6,7})", extracted_text, re.IGNORECASE)
         lot_positions = [(m.start(), m.group(1)) for m in lot_entries]
 
         # Extract all BSR numbers and weights with their positions
@@ -177,8 +185,8 @@ def extract_document_data(docname, file_url):
             "success": True,
             "message": f"Successfully created {len(rows)} rows with data",
             "rows_count": len(rows),
-            "lot_no":lot_no,
-            "texts": texts
+            "lot_no": current_lot_no,  # Return the extracted Lot No. for debugging
+            "raw_text": extracted_text  # Return the full extracted text for debugging
         }
         
     except Exception as e:
