@@ -40,13 +40,13 @@ def extract_item_level_data(docname, item_idx):
             
         extracted_text = texts[0].description
         
-        # Extract Lot No.
-        lot_pattern = re.search(r"Lot\s*No\.\s*:\s*(\d{6,7})", extracted_text, re.IGNORECASE)
+        # Extract Lot No. - Look for 6-digit number after "Credit"
+        lot_pattern = re.search(r"Credit.*?(\d{6})", extracted_text, re.IGNORECASE | re.DOTALL)
         lot_no = lot_pattern.group(1) if lot_pattern else None
         
-        # Fallback: Find first 6-7 digit number in the text
+        # Fallback: Find first 6-digit number in the text if not found after "Credit"
         if not lot_no:
-            lot_fallback = re.findall(r"\b\d{6,7}\b", extracted_text)
+            lot_fallback = re.findall(r"\b\d{6}\b", extracted_text)
             lot_no = lot_fallback[0] if lot_fallback else None
             
         # Extract Reel No.
@@ -112,94 +112,74 @@ def extract_document_data(docname, file_url):
             return {"success": False, "error": "No text detected."}
             
         extracted_text = texts[0].description
-        lines = [line.strip() for line in extracted_text.split('\n')]
-
-        # -------------------------------
-        # 1. Find Lot Numbers after "Credit"
-        # -------------------------------
-        lot_numbers = []
-        current_lot = None
         
-        for i, line in enumerate(lines):
-            if "credit" in line.lower():
-                # Search next 3 lines for 6-7 digit lot number
-                for j in range(i+1, min(i+4, len(lines)):
-                    lot_match = re.search(r"\b(\d{6,7})\b", lines[j])
-                    if lot_match:
-                        current_lot = lot_match.group(1)
-                        lot_numbers.append(current_lot)
-                        break
+        # Extract all Lot No. and their positions - Look for 6-digit numbers after "Credit"
+        lot_entries = re.finditer(r"Credit.*?(\d{6})", extracted_text, re.IGNORECASE | re.DOTALL)
+        lot_positions = [(m.start(), m.group(1)) for m in lot_entries]
 
-        # -------------------------------
-        # 2. Extract BSR and Weight pairs
-        # -------------------------------
-        reel_weight_pairs = []
-        current_lot = None
-        
-        for i, line in enumerate(lines):
-            # Update current Lot No. when "Credit" is found
-            if "credit" in line.lower():
-                for j in range(i+1, min(i+4, len(lines))):
-                    lot_match = re.search(r"\b(\d{6,7})\b", lines[j])
-                    if lot_match:
-                        current_lot = lot_match.group(1)
-                        break
-            
-            # Extract BSR (8 digits) and Weight (2-3 digits)
-            bsr_weight = re.search(r"(\d{8})\s+(\d{2,3}(?:\.\d{1,2})?)", line)
-            if bsr_weight and current_lot:
-                reel_weight_pairs.append((
-                    current_lot,
-                    bsr_weight.group(1),
-                    bsr_weight.group(2)
-                ))
+        # Extract all BSR numbers and weights with their positions
+        reel_weight_entries = re.finditer(r'(\d{8})\s+(\d{2,3}(?:\.\d{0,2})?)', extracted_text)
+        reel_weight_positions = [(m.start(), m.group(1), m.group(2)) for m in reel_weight_entries]
 
-        # -------------------------------
-        # 3. Update Purchase Receipt
-        # -------------------------------
+        # Sort positions
+        lot_positions.sort()
+        reel_weight_positions.sort()
+
+        # Assign Lot No. to each BSR No. and weight
+        current_lot_no = None
+        rows = []
+        for rw_start, reel_no, weight in reel_weight_positions:
+            # Find the latest Lot No. before the current BSR No. and weight
+            for lot_start, lot_no in lot_positions:
+                if lot_start < rw_start:
+                    current_lot_no = lot_no
+                else:
+                    break
+            rows.append((current_lot_no, reel_no, weight))
+
+        # Get the document
         doc = frappe.get_doc("Purchase Receipt", docname)
         
-        # Preserve template data from first item
-        template_data = {}
+        # Store template row data before clearing
+        template_data = None
         if doc.items:
             template_data = {
                 "item_code": doc.items[0].item_code,
                 "item_name": doc.items[0].item_name,
+                "description": doc.items[0].description,
                 "uom": doc.items[0].uom,
                 "warehouse": doc.items[0].warehouse
             }
         
-        # Clear existing items if new data found
-        if reel_weight_pairs:
-            doc.items = []
-            
-            for lot_no, bsr, weight in reel_weight_pairs:
-                doc.append("items", {
-                    **template_data,
-                    "custom_lot_no": lot_no,
-                    "custom_reel_no": bsr,
-                    "qty": float(weight),
-                    "received_qty": float(weight),
-                    "accepted_qty": float(weight)
-                })
-            
-            doc.save(ignore_version=True)
-            return {
-                "success": True,
-                "message": f"Added {len(reel_weight_pairs)} items",
-                "rows_count": len(reel_weight_pairs),
-                "lot_numbers": list(set(lot_numbers)),
-                "raw_text": extracted_text
+        # Clear existing items
+        doc.items = []
+        
+        # Add all extracted rows
+        for lot_no, reel_no, weight in rows:
+            row_data = {
+                "custom_lot_no": lot_no,
+                "custom_reel_no": reel_no,
+                "qty": float(weight),
+                "received_qty": float(weight),
+                "accepted_qty": float(weight),
+                "rejected_qty": 0
             }
-        else:
-            return {
-                "success": False,
-                "error": "No valid data found after 'Credit' keywords"
-            }
-
+            
+            # Add template data if available
+            if template_data:
+                row_data.update(template_data)
+                
+            doc.append("items", row_data)
+        
+        doc.save(ignore_version=True)
+        
+        return {
+            "success": True,
+            "message": f"Successfully created {len(rows)} rows with data",
+            "rows_count": len(rows)
+        }
+        
     except Exception as e:
-        frappe.log_error(
-            f"OCR Error: {str(e)}\nText: {extracted_text if 'extracted_text' in locals() else 'No text'}",
-            "Credit-based Lot No. Extraction Error"
-        )
-        return {"success": False, "error": f"Processing failed: {str(e)}"}
+        frappe.log_error(f"Document OCR Error: {str(e)}\nRaw Text: {extracted_text if 'extracted_text' in locals() else 'No text extracted'}", 
+                        "Document OCR Processing Error")
+        return {"success": False, "error": f"OCR Processing failed: {str(e)}"}
