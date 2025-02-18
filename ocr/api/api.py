@@ -23,6 +23,7 @@ def extract_item_level_data(docname, item_idx):
         
         # Load Google Vision Credentials
         google_credentials = json.loads(frappe.conf.get("google_application_credentials"))
+        # Initialize Google Vision API Client
         client = vision.ImageAnnotatorClient.from_service_account_info(google_credentials)
         
         # Read the image
@@ -40,16 +41,16 @@ def extract_item_level_data(docname, item_idx):
         extracted_text = texts[0].description
         
         # Extract Lot No.
-        lot_pattern = re.search(r"Lot\s*No\.?\s*:?\s*(\d{6,7})", extracted_text, re.IGNORECASE)
+        lot_pattern = re.search(r"Lot\s*No\.\s*:\s*(\d{6,7})", extracted_text, re.IGNORECASE)
         lot_no = lot_pattern.group(1) if lot_pattern else None
         
         # Fallback: Find first 6-7 digit number in the text
         if not lot_no:
-            fallback_lot = re.findall(r"\b\d{6,7}\b", extracted_text)
-            lot_no = fallback_lot[0] if fallback_lot else None
+            lot_fallback = re.findall(r"\b\d{6,7}\b", extracted_text)
+            lot_no = lot_fallback[0] if lot_fallback else None
             
         # Extract Reel No.
-        reel_pattern = re.search(r"REEL\s*No\.?\s*:?\s*(\d{8,9})", extracted_text, re.IGNORECASE)
+        reel_pattern = re.search(r"REEL\s*No\.\s*:\s*(\d{3}\s*\d{5})", extracted_text, re.IGNORECASE)
         reel_no = reel_pattern.group(1).replace(" ", "") if reel_pattern else None
         
         # Fallback: Find first 8-9 digit number
@@ -111,77 +112,94 @@ def extract_document_data(docname, file_url):
             return {"success": False, "error": "No text detected."}
             
         extracted_text = texts[0].description
-        
-        # Split text into lines for structured parsing
-        lines = extracted_text.split('\n')
-        current_lot_no = None
-        lot_numbers = []
-        reel_weight_pairs = []
+        lines = [line.strip() for line in extracted_text.split('\n')]
 
-        # Iterate through lines to find Lot No. and BSR/Weight pairs
-        for line in lines:
-            # Check if line contains "Lot No." (case-insensitive)
-            if re.search(r"Lot\s*No\.?", line, re.IGNORECASE):
-                # Extract the first 6-7 digit number in the next lines
-                for next_line in lines[lines.index(line)+1:]:
-                    lot_match = re.search(r"\b\d{6,7}\b", next_line)
+        # -------------------------------
+        # 1. Find Lot Numbers after "Credit"
+        # -------------------------------
+        lot_numbers = []
+        current_lot = None
+        
+        for i, line in enumerate(lines):
+            if "credit" in line.lower():
+                # Search next 3 lines for 6-7 digit lot number
+                for j in range(i+1, min(i+4, len(lines)):
+                    lot_match = re.search(r"\b(\d{6,7})\b", lines[j])
                     if lot_match:
-                        current_lot_no = lot_match.group()
-                        lot_numbers.append(current_lot_no)
+                        current_lot = lot_match.group(1)
+                        lot_numbers.append(current_lot)
+                        break
+
+        # -------------------------------
+        # 2. Extract BSR and Weight pairs
+        # -------------------------------
+        reel_weight_pairs = []
+        current_lot = None
+        
+        for i, line in enumerate(lines):
+            # Update current Lot No. when "Credit" is found
+            if "credit" in line.lower():
+                for j in range(i+1, min(i+4, len(lines))):
+                    lot_match = re.search(r"\b(\d{6,7})\b", lines[j])
+                    if lot_match:
+                        current_lot = lot_match.group(1)
                         break
             
-            # Extract BSR No. and Weight (assuming format: BSR followed by weight)
-            bsr_weight_match = re.search(r"(\d{8})\s+(\d{2,3}(?:\.\d{0,2})?)", line)
-            if bsr_weight_match:
-                reel_no = bsr_weight_match.group(1)
-                weight = bsr_weight_match.group(2)
-                reel_weight_pairs.append((current_lot_no, reel_no, weight))
-        
-        # Get the document
+            # Extract BSR (8 digits) and Weight (2-3 digits)
+            bsr_weight = re.search(r"(\d{8})\s+(\d{2,3}(?:\.\d{1,2})?)", line)
+            if bsr_weight and current_lot:
+                reel_weight_pairs.append((
+                    current_lot,
+                    bsr_weight.group(1),
+                    bsr_weight.group(2)
+                ))
+
+        # -------------------------------
+        # 3. Update Purchase Receipt
+        # -------------------------------
         doc = frappe.get_doc("Purchase Receipt", docname)
         
-        # Store template row data before clearing
-        template_data = None
+        # Preserve template data from first item
+        template_data = {}
         if doc.items:
             template_data = {
                 "item_code": doc.items[0].item_code,
                 "item_name": doc.items[0].item_name,
-                "description": doc.items[0].description,
                 "uom": doc.items[0].uom,
                 "warehouse": doc.items[0].warehouse
             }
         
-        # Clear existing items
-        doc.items = []
-        
-        # Add all extracted rows
-        for lot_no, reel_no, weight in reel_weight_pairs:
-            row_data = {
-                "custom_lot_no": lot_no,
-                "custom_reel_no": reel_no,
-                "qty": float(weight),
-                "received_qty": float(weight),
-                "accepted_qty": float(weight),
-                "rejected_qty": 0
-            }
+        # Clear existing items if new data found
+        if reel_weight_pairs:
+            doc.items = []
             
-            # Add template data if available
-            if template_data:
-                row_data.update(template_data)
-                
-            doc.append("items", row_data)
-        
-        doc.save(ignore_version=True)
-        
-        return {
-            "success": True,
-            "message": f"Successfully created {len(reel_weight_pairs)} rows with data",
-            "rows_count": len(reel_weight_pairs),
-            "lot_no": current_lot_no,
-            "raw_text": extracted_text
-        }
-        
+            for lot_no, bsr, weight in reel_weight_pairs:
+                doc.append("items", {
+                    **template_data,
+                    "custom_lot_no": lot_no,
+                    "custom_reel_no": bsr,
+                    "qty": float(weight),
+                    "received_qty": float(weight),
+                    "accepted_qty": float(weight)
+                })
+            
+            doc.save(ignore_version=True)
+            return {
+                "success": True,
+                "message": f"Added {len(reel_weight_pairs)} items",
+                "rows_count": len(reel_weight_pairs),
+                "lot_numbers": list(set(lot_numbers)),
+                "raw_text": extracted_text
+            }
+        else:
+            return {
+                "success": False,
+                "error": "No valid data found after 'Credit' keywords"
+            }
+
     except Exception as e:
-        frappe.log_error(f"Document OCR Error: {str(e)}\nRaw Text: {extracted_text if 'extracted_text' in locals() else 'No text extracted'}", 
-                        "Document OCR Processing Error")
-        return {"success": False, "error": f"OCR Processing failed: {str(e)}"}
+        frappe.log_error(
+            f"OCR Error: {str(e)}\nText: {extracted_text if 'extracted_text' in locals() else 'No text'}",
+            "Credit-based Lot No. Extraction Error"
+        )
+        return {"success": False, "error": f"Processing failed: {str(e)}"}
